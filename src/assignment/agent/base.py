@@ -31,7 +31,14 @@ MAX_OBSERVATION_CHARS = 10_000
 # TODO(Part 2): Write instructions that make the model produce concise working
 # memory for a software agent. The prompt should preserve concrete progress,
 # failures, test results, constraints, and next steps without copying raw output.
-COMPACTION_SYSTEM_PROMPT = ""
+COMPACTION_SYSTEM_PROMPT = (
+    "Write concise, factual working memory for the agent continuing the task. "
+    "Use the standing instructions and task as context and summarize the supplied older history. "
+    "Carry forward relevant facts from any earlier working memory. Preserve the objective, "
+    "constraints, relevant files and commands, edits, concrete results, failed approaches, "
+    "tests and their outcomes, blockers, and the next action. "
+    "Omit redundant details and long raw output. Return only the working memory."
+)
 
 
 class StepLimitError(Exception):
@@ -314,9 +321,34 @@ class Agent:
         # with all linked tool observations. The resulting summary should change
         # what `build_prompt` emits, and reduce the length of the prompt.
 
-        raise NotImplementedError
+        # raise NotImplementedError
+        
+        action_starts = [
+            index
+            for index, message in enumerate(self.message_history)
+            if message.get("role") == "assistant"
+        ]
+        if len(action_starts) <= self.compaction_keep_recent_steps:
+            return [], {}
 
-        compaction_prompt = []
+        # self.message_history[:cutoff]: compressed
+        # self.message_history[cutoff:]: retained
+        cutoff = action_starts[-self.compaction_keep_recent_steps]
+        older_history = self.message_history[:cutoff]
+        compaction_prompt = [
+            {"role": "system", "content": COMPACTION_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "standing_instructions": self.system_prompt,
+                        "task": self.task_prompt,
+                        "older_history": older_history,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
 
         ### Do not modify this section ###
         compaction_response = self.client.chat.completions.create(
@@ -329,6 +361,16 @@ class Agent:
 
         # Use `compaction_response` to update what `build_prompt` emits, but
         # DO NOT modify the object itself. Let the method return it unchanged.
+        summary = ""
+        if compaction_response.choices:
+            summary = (compaction_response.choices[0].message.content or "").strip()
+        if summary:
+            memory = {
+                "role": "user",
+                "content": f"<working_memory>\n{summary}\n</working_memory>",
+            }
+            if rough_message_tokens([memory]) < rough_message_tokens(older_history):
+                self.message_history[:cutoff] = [memory]
 
         ### Do not modify this section ###
         return compaction_prompt, compaction_response.model_dump(mode="json")
@@ -390,6 +432,7 @@ class Agent:
                 # request in your shared loop. It already estimates active tokens
                 # and handles the threshold, and tracks compaction events for
                 # logging.
+                self.maybe_compact_context()
 
                 # raise NotImplementedError
 

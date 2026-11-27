@@ -8,48 +8,44 @@ import io
 import logging
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tarfile
 from tempfile import TemporaryDirectory
 from typing import Iterator
 
-from assignment.agent import CodeAgent
-from assignment.eval.harness import EvaluationSpec, Report, _grade
+from assignment.eval.harness import EvaluationSpec
 from assignment.task import Task
 from assignment.utils.image import SourceMismatch, verify_source
+from tests_scripts.local_runner import (
+    DEFAULT_TIMEOUT,
+    BubblewrapEnvironment,
+    bubblewrap_path,
+    generate_patch,
+    replay_patch,
+    require_model_settings,
+)
 
 
 DEFAULT_TASK = "tasks/chess-terminal-move"
-DEFAULT_MODEL = "deepseek/deepseek-v4-flash-0731"
-DEFAULT_TIMEOUT = 600
 
 
-class LocalTestbed:
+class LocalTestbed(BubblewrapEnvironment):
     """Run commands in fresh namespaces that share a disposable checkout."""
 
     cwd = "/testbed"
 
     def __init__(self, bwrap: str, checkout: Path, venv: Path, scratch: Path):
-        platform = os.uname()
-        self.system = platform.sysname
-        self.release = platform.release
-        self.version = platform.version
-        self.machine = platform.machine
-
         # uv's Python symlink can target a minor-version alias such as 3.12.
         config = (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
         python_bin = next(
             Path(line.removeprefix("home = ")) for line in config if line.startswith("home = ")
         )
         python_root = python_bin.parent
-        self.sandbox = [
-            bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
+        mounts = [
             "--ro-bind", "/usr", "/usr",
             "--ro-bind-try", "/bin", "/bin",
             "--ro-bind-try", "/lib", "/lib",
             "--ro-bind-try", "/lib64", "/lib64",
-            "--dev", "/dev", "--proc", "/proc",
             "--bind", str(scratch), "/tmp",
             "--bind", str(checkout), self.cwd,
             # Preserve the absolute paths used by the virtualenv and editable install.
@@ -57,53 +53,13 @@ class LocalTestbed:
             "--ro-bind", str(python_root.resolve()), str(python_root),
             "--ro-bind", str(venv), str(venv),
         ]
-        self.env = {"PATH": f"{venv / 'bin'}:/usr/bin:/bin", "LANG": "C.UTF-8"}
-
-    def execute(
-        self,
-        command: str | list[str],
-        *,
-        timeout: float | None = None,
-        cwd: str | None = None,
-        env: dict[str, str] | None = None,
-        shell: bool | None = True,
-    ) -> dict[str, str | int]:
-        argv = [command] if isinstance(command, str) else command
-        if shell is not False:
-            argv = ["/bin/bash", "-c", *argv]
-
-        invocation = [*self.sandbox, "--chdir", cwd or self.cwd]
-        for key, value in {**self.env, **(env or {})}.items():
-            invocation.extend(["--setenv", key, value])
-        invocation.extend(["--", *argv])
-
-        seconds = DEFAULT_TIMEOUT if timeout is None else timeout
-        exception_info = ""
-        try:
-            result = subprocess.run(
-                invocation, stdin=subprocess.DEVNULL, capture_output=True, timeout=seconds
-            )
-            stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
-        except subprocess.TimeoutExpired as exc:
-            stdout, stderr, returncode = exc.stdout or b"", exc.stderr or b"", -1
-            exception_info = f"Command timed out after {seconds} seconds."
-
-        stdout_text = stdout.decode("utf-8", errors="backslashreplace")
-        stderr_text = stderr.decode("utf-8", errors="backslashreplace")
-        return {
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-            "output": stdout_text + stderr_text,
-            "returncode": returncode,
-            "exception_info": exception_info,
-        }
+        env = {"PATH": f"{venv / 'bin'}:/usr/bin:/bin", "LANG": "C.UTF-8"}
+        super().__init__(bwrap, mounts, env)
 
 
 @contextmanager
 def local_testbed(task: Task) -> Iterator[LocalTestbed]:
-    bwrap = shutil.which("bwrap")
-    if bwrap is None:
-        raise RuntimeError("Install bubblewrap (bwrap) to run the local testbed.")
+    bwrap = bubblewrap_path()
     verify_source(task)
 
     with TemporaryDirectory(prefix="assignment-part1-") as directory:
@@ -141,33 +97,18 @@ def local_testbed(task: Task) -> Iterator[LocalTestbed]:
 
 
 def run_code_agent(args: argparse.Namespace) -> int:
-    missing = [name for name in ("OPENAI_BASE_URL", "OPENAI_API_KEY") if not os.environ.get(name)]
-    if missing:
-        raise ValueError(f"Set {', '.join(missing)} in the environment or in .env.")
-
+    require_model_settings()
     task = Task.load(args.task)
-    model = args.model or os.environ.get("OPENAI_MODEL") or DEFAULT_MODEL
     with local_testbed(task) as environment:
-        agent = CodeAgent(
+        generate_patch(
+            environment,
             task=task.problem_statement,
-            environment=environment,
-            model=model,
-            logs_save_path=str(args.trajectory),
+            model=args.model,
+            trajectory=args.trajectory,
             step_limit=args.step_limit,
-            skills_path=str(args.skills_path),
-            auto_stop_environment=False,
+            skills_path=args.skills_path,
+            patch_output=args.patch_output,
         )
-        agent.run()
-        result = environment.execute(["cat", "patch.txt"], shell=False)
-        if result["returncode"] != 0:
-            raise RuntimeError(f"Could not read the agent's patch.txt.\n{result['stderr']}")
-        patch = result["stdout"]
-
-    if not patch.strip():
-        raise RuntimeError("Agent finished without a non-empty patch.")
-    args.patch_output.parent.mkdir(parents=True, exist_ok=True)
-    args.patch_output.write_text(patch, encoding="utf-8")
-    print(f"Patch: {args.patch_output}\nTrajectory: {args.trajectory}")
     return 0
 
 
@@ -186,17 +127,7 @@ def check_part1(args: argparse.Namespace) -> int:
     if spec.task_id != task.id:
         raise ValueError(f"Evaluation is for {spec.task_id!r}, expected {task.id!r}.")
     with local_testbed(task) as environment:
-        report = _grade(
-            environment,
-            Report(task_id=task.id, patch_applied=False),
-            test_patch=spec.test_patch,
-            test_cmd=spec.test_cmd,
-            fail_to_pass=spec.fail_to_pass,
-            pass_to_pass=spec.pass_to_pass,
-            patch=patch,
-            timeout=args.timeout,
-            framework=spec.framework,
-        )
+        report = replay_patch(environment, spec, patch, args.timeout)
     print(report.summary())
     return 0 if report.resolved else 1
 
