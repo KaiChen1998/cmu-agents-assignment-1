@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import yaml
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -152,6 +153,7 @@ class Agent:
 
         # TODO(1.1.a): Add machinery to maintain agent state as it takes actions
         # and observes the results.
+        self.message_history: list[dict[str, Any]] = []
 
     def load_skills(self, skills_path: Path) -> dict[str, dict[str, str]]:
         """Load the skill folders exposed to this agent."""
@@ -164,7 +166,48 @@ class Agent:
         # ``content`` of the skill file for ``invoke_skill``. Reject duplicate
         # names and malformed or missing frontmatter with a clear
         # ``ValueError``.
-        raise NotImplementedError
+        # raise NotImplementedError
+
+        if not skills_path.is_dir():
+            raise ValueError(f"Skills path must be a directory: {skills_path}")
+
+        skills: dict[str, dict[str, str]] = {}
+        for skill_file in sorted(skills_path.glob("*/SKILL.md")):
+            if not skill_file.is_file():
+                continue
+
+            with skill_file.open(encoding="utf-8", newline="") as source:
+                content = source.read()
+            lines = content.splitlines()
+            if not lines or lines[0].rstrip() != "---":
+                raise ValueError(f"Missing YAML frontmatter in {skill_file}")
+            for end, line in enumerate(lines[1:], start=1):
+                if line.rstrip() == "---":
+                    break
+            else:
+                raise ValueError(f"Missing closing frontmatter delimiter in {skill_file}")
+
+            try:
+                frontmatter = yaml.safe_load("\n".join(lines[1:end]))
+            except yaml.YAMLError as exc:
+                raise ValueError(f"Malformed YAML frontmatter in {skill_file}: {exc}") from exc
+            if not isinstance(frontmatter, dict):
+                raise ValueError(f"Skill frontmatter must be a mapping in {skill_file}")
+
+            name = frontmatter.get("name")
+            description = frontmatter.get("description")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"Expected a non-empty skill name in {skill_file}")
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(f"Expected a non-empty skill description in {skill_file}")
+            if name in skills:
+                raise ValueError(f"Duplicate skill name {name!r} in {skill_file}")
+
+            skills[name] = {
+                "metadata": f"name: {name}\ndescription: {description.strip()}",
+                "content": content,
+            }
+        return skills
 
     def query_language_model(self) -> dict[str, Any]:
         """Send one tool-enabled Chat Completions request and normalize it."""
@@ -227,7 +270,13 @@ class Agent:
 
         # You want to be careful about which attributes of the class you modify
         # here as they may also be handled by the subclasses.
-        raise NotImplementedError
+        # raise NotImplementedError
+        """Assemble the opening messages and the current interaction history."""
+        return [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": self.task_prompt},
+            *self.message_history,
+        ]
 
     def estimate_active_prompt_tokens(self) -> int:
         """Estimate the next prompt, calibrated by the provider's latest usage."""
@@ -331,12 +380,29 @@ class Agent:
             # by setting `Agent.finished`. If the agent exceeds the
             # `step_limit`, raise `StepLimitError`.
 
-            # TODO(2.2) Call `maybe_compact_context()` before each new action
-            # request in your shared loop. It already estimates active tokens
-            # and handles the threshold, and tracks compaction events for
-            # logging.
+            while not self.finished:
+                if self.steps_taken >= self.step_limit:
+                    raise StepLimitError(
+                        f"Agent reached the step limit of {self.step_limit}."
+                    )
 
-            raise NotImplementedError
+                # TODO(2.2) Call `maybe_compact_context()` before each new action
+                # request in your shared loop. It already estimates active tokens
+                # and handles the threshold, and tracks compaction events for
+                # logging.
+
+                # raise NotImplementedError
+
+                # Reasoning: call LLM and get response
+                action = self.query_language_model()
+                self.message_history.append(action)
+
+                # Action: call tools and get observations
+                tool_calls = action.get("tool_calls")
+                if tool_calls:
+                    observations = self.execute_tool_calls(tool_calls)
+                    self.message_history.extend(observations)
+                
         finally:
             # This block is provided infrastructure. Do not modify it: a
             # trajectory is required even when a run fails.
