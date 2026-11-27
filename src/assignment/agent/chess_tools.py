@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+from shlex import quote
 from typing import Any
 
 import httpx
@@ -52,7 +53,21 @@ def _simulate_move(client: httpx.Client, arguments: str) -> str:
     # JSON arguments, arguments that are not an object, a missing or
     # non-string fen, a non-string move, a position or move the server rejects,
     # and a transport failure.
-    raise NotImplementedError
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict):
+            raise ValueError("simulate_move arguments must be a JSON object.")
+        if payload.keys() - {"fen", "move"}:
+            raise ValueError("simulate_move accepts only fen and move arguments.")
+        if not isinstance(payload.get("fen"), str):
+            raise ValueError("simulate_move requires a FEN string.")
+        move = payload.get("move")
+        if move is not None and not isinstance(move, str):
+            raise ValueError("simulate_move expects a UCI move string or null.")
+        state = _request_state(client, "POST", "/api/simulate", json=payload)
+        return json.dumps(state)
+    except Exception as exc:
+        return f"<chess_error>{exc}</chess_error>"
 
 
 def _play_move(client: httpx.Client, arguments: str) -> str:
@@ -67,7 +82,17 @@ def _play_move(client: httpx.Client, arguments: str) -> str:
     # for the agent to address. Cover malformed JSON arguments, arguments
     # that are not an object, a missing or non-string fen, a non-string move,
     # a position or move the server rejects, and a transport failure.
-    raise NotImplementedError
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict):
+            raise ValueError("play_move arguments must be a JSON object.")
+        move = payload.get("move")
+        if payload.keys() != {"move"} or not isinstance(move, str):
+            raise ValueError("play_move requires a single string move in UCI notation.")
+        state = _request_state(client, "POST", "/api/move", json={"move": move})
+        return json.dumps(state)
+    except Exception as exc:
+        return f"<chess_error>{exc}</chess_error>"
 
 
 def _run_python(env: Any, port: int, arguments: str) -> str:
@@ -95,7 +120,23 @@ def _run_python(env: Any, port: int, arguments: str) -> str:
     #
     # Return <chess_error>{message}</chess_error> if there are issues like type
     # mismatches or parsing failures.
-    raise NotImplementedError
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict):
+            raise ValueError("run_python arguments must be a JSON object.")
+        code = payload.get("code")
+        if payload.keys() != {"code"} or not isinstance(code, str):
+            raise ValueError("run_python requires a single code string.")
+
+        encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
+        command = f"python /opt/assignment/sandbox_python.py {quote(str(port))} {quote(encoded)}"
+        result = env.execute(command)
+        if result["returncode"] != 0:
+            detail = result.get("exception_info") or result.get("stderr") or result.get("output")
+            raise RuntimeError(detail or f"Sandbox command exited with code {result['returncode']}.")
+        return result["stdout"] if "stdout" in result else result["output"]
+    except Exception as exc:
+        return f"<chess_error>{exc}</chess_error>"
 
 
 def _invoke_skill(skills: dict[str, dict[str, str]], arguments: str) -> str:
@@ -103,7 +144,19 @@ def _invoke_skill(skills: dict[str, dict[str, str]], arguments: str) -> str:
     # TODO(3.5): parse the arguments and return the named skill's content.
     # Return <chess_error>{message}</chess_error> if there are issues like type
     # mismatches or parsing failures.
-    raise NotImplementedError
+    try:
+        payload = json.loads(arguments)
+        if not isinstance(payload, dict):
+            raise ValueError("invoke_skill arguments must be a JSON object.")
+        name = payload.get("name")
+        if payload.keys() != {"name"} or not isinstance(name, str):
+            raise ValueError("invoke_skill requires a single string name.")
+        skill = skills.get(name)
+        if skill is None:
+            raise ValueError(f"Unknown skill {name!r}.")
+        return skill["content"]
+    except (TypeError, ValueError) as exc:
+        return f"<chess_error>{exc}</chess_error>"
 
 
 def _game_state(client: httpx.Client, reset: bool = False) -> dict:

@@ -232,7 +232,7 @@ class Agent:
                 messages=messages,
                 tools=self.tools,
                 reasoning_effort="medium",
-                max_completion_tokens=4096,
+                max_tokens=4096,
             )
         except Exception as exc:
             print(
@@ -355,7 +355,7 @@ class Agent:
             model=self.model,
             messages=compaction_prompt,
             reasoning_effort="medium",
-            max_completion_tokens=self.compaction_max_tokens,
+            max_tokens=self.compaction_max_tokens,
         )
         ##################################
 

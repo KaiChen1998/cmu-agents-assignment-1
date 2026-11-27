@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import tarfile
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, gettempdir
 from typing import Iterator
 
 from assignment.eval.harness import EvaluationSpec
@@ -35,6 +35,7 @@ class LocalTestbed(BubblewrapEnvironment):
     cwd = "/testbed"
 
     def __init__(self, bwrap: str, checkout: Path, venv: Path, scratch: Path):
+        self.scratch = scratch
         # uv's Python symlink can target a minor-version alias such as 3.12.
         config = (venv / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
         python_bin = next(
@@ -74,8 +75,17 @@ def local_testbed(task: Task) -> Iterator[LocalTestbed]:
             source.extractall(checkout, filter="data")
 
         # Match the task Dockerfile's Python version and editable installation.
+        uv_env = os.environ.copy()
+        if "UV_CACHE_DIR" not in uv_env:
+            cache = Path(gettempdir()) / f"cmu-agents-uv-{os.getuid()}"
+            cache.mkdir(mode=0o700, exist_ok=True)
+            if cache.stat().st_uid != os.getuid():
+                raise RuntimeError(f"The uv cache at {cache} must be owned by the current user.")
+            uv_env["UV_CACHE_DIR"] = str(cache)
         subprocess.run(
-            ["uv", "venv", "--managed-python", "--python", "3.12", str(venv)], check=True
+            ["uv", "venv", "--managed-python", "--python", "3.12", str(venv)],
+            check=True,
+            env=uv_env,
         )
         subprocess.run(
             [
@@ -83,6 +93,7 @@ def local_testbed(task: Task) -> Iterator[LocalTestbed]:
                 "--no-deps", "--editable", str(checkout), *task.pins,
             ],
             check=True,
+            env=uv_env,
         )
 
         environment = LocalTestbed(bwrap, checkout, venv, scratch)

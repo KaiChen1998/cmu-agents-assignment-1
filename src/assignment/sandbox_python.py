@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import sys
 import traceback
 from contextlib import redirect_stderr, redirect_stdout
@@ -43,7 +44,9 @@ def build_tools(client: httpx.Client) -> dict:
 def main() -> None:
     port, encoded = sys.argv[1], sys.argv[2]
     code = base64.b64decode(encoded).decode()
-    client = httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30)
+    socket_path = os.environ.get("ASSIGNMENT_CHESS_SOCKET")
+    transport = httpx.HTTPTransport(uds=socket_path) if socket_path else None
+    client = httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=30, transport=transport)
 
     namespace = {"__name__": "__agent__", **build_tools(client)}
     stdout, stderr = io.StringIO(), io.StringIO()

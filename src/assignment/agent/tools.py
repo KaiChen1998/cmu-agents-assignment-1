@@ -133,10 +133,68 @@ INVOKE_SKILL_TOOL = {
 # TODO(3.1.a): Define an OpenAI function-tool schema named ``play_move``.
 # It must accept exactly one required string argument named ``move``, explain
 # that moves use UCI notation (for example e2e4), and reject extra arguments.
-PLAY_MOVE_TOOL: dict = {}
+PLAY_MOVE_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "play_move",
+        "description": "Play a White move on the live board and receive Black's reply.",
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "move": {
+                    "type": "string",
+                    "description": "A move in UCI notation, for example e2e4 or e7e8q.",
+                },
+            },
+            "required": ["move"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 # TODO(3.3): Define the `simulate_move` tool, like the `play_move` tool.
-SIMULATE_MOVE_TOOL: dict = {}
+SIMULATE_MOVE_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "simulate_move",
+        "description": (
+            "Inspect a FEN position or simulate one ply for either side without "
+            "changing the live game. Returns the resulting position and legal moves."
+        ),
+        "strict": False,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fen": {"type": "string", "description": "A complete six-field FEN."},
+                "move": {
+                    "type": ["string", "null"],
+                    "description": "Optional UCI move, such as e2e4 or e7e8q.",
+                },
+            },
+            "required": ["fen"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 # TODO()
-RUN_PYTHON_TOOL: dict = {}
+RUN_PYTHON_TOOL: dict = {
+    "type": "function",
+    "function": {
+        "name": "run_python",
+        "description": (
+            "Run Python in the chess sandbox. The functions simulate_move and "
+            "play_move are available to inspect positions and commit a chosen move."
+        ),
+        "strict": True,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "Python source code to run."},
+            },
+            "required": ["code"],
+            "additionalProperties": False,
+        },
+    },
+}

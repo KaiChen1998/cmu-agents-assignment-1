@@ -39,6 +39,23 @@ class BubblewrapEnvironment:
         ]
         self.env = env
 
+    def command_line(
+        self,
+        command: str | list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        shell: bool | None = True,
+    ) -> list[str]:
+        argv = [command] if isinstance(command, str) else command
+        if shell is not False:
+            argv = ["/bin/bash", "-c", *argv]
+
+        invocation = [*self.sandbox, "--chdir", cwd or self.cwd]
+        for key, value in {**self.env, **(env or {})}.items():
+            invocation.extend(["--setenv", key, value])
+        return [*invocation, "--", *argv]
+
     def execute(
         self,
         command: str | list[str],
@@ -48,15 +65,7 @@ class BubblewrapEnvironment:
         env: dict[str, str] | None = None,
         shell: bool | None = True,
     ) -> dict[str, str | int]:
-        argv = [command] if isinstance(command, str) else command
-        if shell is not False:
-            argv = ["/bin/bash", "-c", *argv]
-
-        invocation = [*self.sandbox, "--chdir", cwd or self.cwd]
-        for key, value in {**self.env, **(env or {})}.items():
-            invocation.extend(["--setenv", key, value])
-        invocation.extend(["--", *argv])
-
+        invocation = self.command_line(command, cwd=cwd, env=env, shell=shell)
         seconds = DEFAULT_TIMEOUT if timeout is None else timeout
         exception_info = ""
         try:
